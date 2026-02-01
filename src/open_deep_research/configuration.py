@@ -119,7 +119,7 @@ class Configuration(BaseModel):
     )
     # Model Configuration
     summarization_model: str = Field(
-        default="openai:gpt-4.1-mini",
+        default="wine-claude-sonnet-4-5",
         metadata={
             "x_oap_ui_config": {
                 "type": "text",
@@ -151,7 +151,7 @@ class Configuration(BaseModel):
         }
     )
     research_model: str = Field(
-        default="openai:gpt-4.1",
+        default="wine-claude-sonnet-4-5",
         metadata={
             "x_oap_ui_config": {
                 "type": "text",
@@ -171,7 +171,7 @@ class Configuration(BaseModel):
         }
     )
     compression_model: str = Field(
-        default="openai:gpt-4.1",
+        default="wine-claude-sonnet-4-5",
         metadata={
             "x_oap_ui_config": {
                 "type": "text",
@@ -191,7 +191,7 @@ class Configuration(BaseModel):
         }
     )
     final_report_model: str = Field(
-        default="openai:gpt-4.1",
+        default="wine-claude-sonnet-4-5",
         metadata={
             "x_oap_ui_config": {
                 "type": "text",

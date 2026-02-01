@@ -3,7 +3,6 @@
 import asyncio
 from typing import Literal
 
-from langchain.chat_models import init_chat_model
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
@@ -19,6 +18,7 @@ from langgraph.types import Command
 from open_deep_research.configuration import (
     Configuration,
 )
+from langchain_openai import ChatOpenAI
 from open_deep_research.prompts import (
     clarify_with_user_instructions,
     compress_research_simple_human_message,
@@ -52,10 +52,19 @@ from open_deep_research.utils import (
     think_tool,
 )
 
-# Initialize a configurable model that we will use throughout the agent
-configurable_model = init_chat_model(
-    configurable_fields=("model", "max_tokens", "api_key"),
-)
+# Helper function to create chat model instances
+def create_model(model: str, max_tokens: int, api_key: str):
+    """Create a chat model instance routed through LiteLLM gateway (OpenAI client)."""
+    import os
+    base_url = os.getenv("LITELLM_BASE_URL")
+
+    return ChatOpenAI(
+        model=model,
+        max_tokens=max_tokens,
+        api_key=api_key,
+        base_url=base_url,
+        temperature=0.7,
+    )
 
 async def clarify_with_user(state: AgentState, config: RunnableConfig) -> Command[Literal["write_research_brief", "__end__"]]:
     """Analyze user messages and ask clarifying questions if the research scope is unclear.
@@ -82,15 +91,13 @@ async def clarify_with_user(state: AgentState, config: RunnableConfig) -> Comman
         "model": configurable.research_model,
         "max_tokens": configurable.research_model_max_tokens,
         "api_key": get_api_key_for_model(configurable.research_model, config),
-        "tags": ["langsmith:nostream"]
     }
     
     # Configure model with structured output and retry logic
     clarification_model = (
-        configurable_model
+        create_model(**model_config)
         .with_structured_output(ClarifyWithUser)
         .with_retry(stop_after_attempt=configurable.max_structured_output_retries)
-        .with_config(model_config)
     )
     
     # Step 3: Analyze whether clarification is needed
@@ -135,15 +142,13 @@ async def write_research_brief(state: AgentState, config: RunnableConfig) -> Com
         "model": configurable.research_model,
         "max_tokens": configurable.research_model_max_tokens,
         "api_key": get_api_key_for_model(configurable.research_model, config),
-        "tags": ["langsmith:nostream"]
     }
     
     # Configure model for structured research question generation
     research_model = (
-        configurable_model
+        create_model(**research_model_config)
         .with_structured_output(ResearchQuestion)
         .with_retry(stop_after_attempt=configurable.max_structured_output_retries)
-        .with_config(research_model_config)
     )
     
     # Step 2: Generate structured research brief from user messages
@@ -195,7 +200,6 @@ async def supervisor(state: SupervisorState, config: RunnableConfig) -> Command[
         "model": configurable.research_model,
         "max_tokens": configurable.research_model_max_tokens,
         "api_key": get_api_key_for_model(configurable.research_model, config),
-        "tags": ["langsmith:nostream"]
     }
     
     # Available tools: research delegation, completion signaling, and strategic thinking
@@ -203,10 +207,9 @@ async def supervisor(state: SupervisorState, config: RunnableConfig) -> Command[
     
     # Configure model with tools, retry logic, and model settings
     research_model = (
-        configurable_model
+        create_model(**research_model_config)
         .bind_tools(lead_researcher_tools)
         .with_retry(stop_after_attempt=configurable.max_structured_output_retries)
-        .with_config(research_model_config)
     )
     
     # Step 2: Generate supervisor response based on current context
@@ -393,7 +396,6 @@ async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[
         "model": configurable.research_model,
         "max_tokens": configurable.research_model_max_tokens,
         "api_key": get_api_key_for_model(configurable.research_model, config),
-        "tags": ["langsmith:nostream"]
     }
     
     # Prepare system prompt with MCP context if available
@@ -404,10 +406,9 @@ async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[
     
     # Configure model with tools, retry logic, and settings
     research_model = (
-        configurable_model
+        create_model(**research_model_config)
         .bind_tools(tools)
         .with_retry(stop_after_attempt=configurable.max_structured_output_retries)
-        .with_config(research_model_config)
     )
     
     # Step 3: Generate researcher response with system context
@@ -524,12 +525,11 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
     """
     # Step 1: Configure the compression model
     configurable = Configuration.from_runnable_config(config)
-    synthesizer_model = configurable_model.with_config({
-        "model": configurable.compression_model,
-        "max_tokens": configurable.compression_model_max_tokens,
-        "api_key": get_api_key_for_model(configurable.compression_model, config),
-        "tags": ["langsmith:nostream"]
-    })
+    synthesizer_model = create_model(
+        model=configurable.compression_model,
+        max_tokens=configurable.compression_model_max_tokens,
+        api_key=get_api_key_for_model(configurable.compression_model, config),
+    )
     
     # Step 2: Prepare messages for compression
     researcher_messages = state.get("researcher_messages", [])
@@ -647,7 +647,11 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
             )
             
             # Generate the final report
-            final_report = await configurable_model.with_config(writer_model_config).ainvoke([
+            final_report = await create_model(
+                model=configurable.final_report_model,
+                max_tokens=configurable.final_report_model_max_tokens,
+                api_key=get_api_key_for_model(configurable.final_report_model, config),
+            ).ainvoke([
                 HumanMessage(content=final_report_prompt)
             ])
             

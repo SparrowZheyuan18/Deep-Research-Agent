@@ -8,7 +8,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
 import aiohttp
-from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -30,8 +29,11 @@ from mcp import McpError
 from tavily import AsyncTavilyClient
 
 from open_deep_research.configuration import Configuration, SearchAPI
+from langchain_openai import ChatOpenAI
 from open_deep_research.prompts import summarize_webpage_prompt
 from open_deep_research.state import ResearchComplete, Summary
+
+logger = logging.getLogger(__name__)
 
 ##########################
 # Tavily Search Tool Utils
@@ -83,11 +85,28 @@ async def tavily_search(
     
     # Initialize summarization model with retry logic
     model_api_key = get_api_key_for_model(configurable.summarization_model, config)
-    summarization_model = init_chat_model(
+    base_url = os.getenv("LITELLM_BASE_URL")
+
+    def _mask_key(key: str) -> str:
+        if not key:
+            return "None"
+        if len(key) <= 8:
+            return "***" + key[-4:]
+        return key[:4] + "***" + key[-4:]
+
+    logger.info(
+        "[LLM CALL] (summarization) model=%s max_tokens=%s base_url=%s api_key=%s",
+        configurable.summarization_model,
+        configurable.summarization_model_max_tokens,
+        base_url or "None",
+        _mask_key(model_api_key),
+    )
+
+    summarization_model = ChatOpenAI(
         model=configurable.summarization_model,
         max_tokens=configurable.summarization_model_max_tokens,
         api_key=model_api_key,
-        tags=["langsmith:nostream"]
+        base_url=base_url,
     ).with_structured_output(Summary).with_retry(
         stop_after_attempt=configurable.max_structured_output_retries
     )
@@ -895,23 +914,31 @@ def get_api_key_for_model(model_name: str, config: RunnableConfig):
     model_name = model_name.lower()
     if should_get_from_config.lower() == "true":
         api_keys = config.get("configurable", {}).get("apiKeys", {})
-        if not api_keys:
-            return None
-        if model_name.startswith("openai:"):
-            return api_keys.get("OPENAI_API_KEY")
-        elif model_name.startswith("anthropic:"):
-            return api_keys.get("ANTHROPIC_API_KEY")
-        elif model_name.startswith("google"):
-            return api_keys.get("GOOGLE_API_KEY")
-        return None
+        # if not api_keys:
+        #     return None
+        # if model_name.startswith("openai:"):
+        #     return api_keys.get("OPENAI_API_KEY")
+        # elif model_name.startswith("anthropic:"):
+        #     return api_keys.get("ANTHROPIC_API_KEY")
+        # elif model_name.startswith("google"):
+        #     return api_keys.get("GOOGLE_API_KEY")
+        # return None
+        return api_keys.get("LITELLM_API_KEY")
     else:
         if model_name.startswith("openai:"): 
-            return os.getenv("OPENAI_API_KEY")
+            api_key = os.getenv("OPENAI_API_KEY")
+            if api_key:
+                return api_key
         elif model_name.startswith("anthropic:"):
-            return os.getenv("ANTHROPIC_API_KEY")
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+            if api_key:
+                return api_key
         elif model_name.startswith("google"):
-            return os.getenv("GOOGLE_API_KEY")
-        return None
+            api_key = os.getenv("GOOGLE_API_KEY")
+            if api_key:
+                return api_key
+        # Fallback to LITELLM_API_KEY if available (for custom gateways)
+        return os.getenv("LITELLM_API_KEY")
 
 def get_tavily_api_key(config: RunnableConfig):
     """Get Tavily API key from environment or config."""
