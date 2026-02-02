@@ -86,6 +86,7 @@ class SupervisorState(TypedDict):
     notes: Annotated[list[str], override_reducer] = []
     research_iterations: int = 0
     raw_notes: Annotated[list[str], override_reducer] = []
+    human_interaction_content: Optional[str] = None
 
 class ResearcherState(TypedDict):
     """State for individual researchers conducting research."""

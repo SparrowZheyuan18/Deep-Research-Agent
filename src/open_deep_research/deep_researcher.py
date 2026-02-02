@@ -97,7 +97,10 @@ async def clarify_with_user(state: AgentState, config: RunnableConfig) -> Comman
                 updated_supervisor_messages = state["supervisor_messages"] + [latest_user_message]
                 return Command(
                     goto="research_supervisor",
-                    update={"supervisor_messages": {"type": "override", "value": updated_supervisor_messages}}
+                    update={
+                        "supervisor_messages": {"type": "override", "value": updated_supervisor_messages},
+                        "human_interaction_content": None  # Clear the interaction content since we're resuming
+                    }
                 )
         
         # If no new user message found, just continue to supervisor
@@ -249,7 +252,7 @@ async def supervisor(state: SupervisorState, config: RunnableConfig) -> Command[
         }
     )
 
-async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Command[Literal["supervisor", "__end__"]]:
+async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Command:
     """Execute tools called by the supervisor, including research delegation and strategic thinking.
     
     This function handles three types of supervisor tool calls:
@@ -277,13 +280,9 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
         tool_call["name"] == "ResearchComplete" 
         for tool_call in most_recent_message.tool_calls
     )
-    ask_human_tool_call = any(
-        tool_call["name"] == "AskHuman" 
-        for tool_call in most_recent_message.tool_calls
-    )
     
-    # Exit if any termination condition is met (except for AskHuman which goes to user)
-    if exceeded_allowed_iterations or no_tool_calls or research_complete_tool_call:
+    # Check for ResearchComplete - end research phase
+    if research_complete_tool_call:
         return Command(
             goto=END,
             update={
@@ -292,17 +291,46 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
             }
         )
     
-    # Handle AskHuman calls - route to human interaction node
+    # Check for AskHuman - go to human interaction with specific content
+    ask_human_tool_call = any(
+        tool_call["name"] == "AskHuman" 
+        for tool_call in most_recent_message.tool_calls
+    )
     if ask_human_tool_call:
         ask_human_call = next(
             tool_call for tool_call in most_recent_message.tool_calls 
             if tool_call["name"] == "AskHuman"
         )
-        human_content = ask_human_call["args"]["content"]
+        specific_content = ask_human_call["args"]["content"]
+        
+        # Add context about current research progress
+        research_brief = state.get("research_brief", "Research in progress")
+        notes = state.get("notes", [])
+        research_iterations = state.get("research_iterations", 0)
+        
+        enhanced_content = f"""🔍 **Supervisor Request for Clarification - Iteration {research_iterations}**
+
+**Research Question:** {research_brief}
+**Progress:** {len(notes)} findings gathered so far
+
+**Supervisor's Question:**
+{specific_content}
+
+**Current Research Context:**
+"""
+        
+        if notes:
+            for i, note in enumerate(notes[-3:], 1):  # Show last 3 findings for context
+                enhanced_content += f"- {note[:100]}{'...' if len(note) > 100 else ''}\n"
+        else:
+            enhanced_content += "Research just beginning - no findings yet.\n"
+        
+        enhanced_content += "\n*Please provide your response to help guide the research.*"
+        
         return Command(
-            goto="ask_human",
+            goto=END,
             update={
-                "human_interaction_content": human_content,
+                "human_interaction_content": enhanced_content,
                 "supervisor_messages": [ToolMessage(
                     content="Waiting for human response to clarification request.",
                     name="AskHuman",
@@ -314,6 +342,13 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
     # Step 2: Process all tool calls together (both think_tool and ConductResearch)
     all_tool_messages = []
     update_payload = {"supervisor_messages": []}
+    
+    # Check if research was conducted this iteration
+    conduct_research_calls = [
+        tool_call for tool_call in most_recent_message.tool_calls 
+        if tool_call["name"] == "ConductResearch"
+    ]
+    research_was_conducted = len(conduct_research_calls) > 0
     
     # Handle think_tool calls (strategic reflection)
     think_tool_calls = [
@@ -329,12 +364,7 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
             tool_call_id=tool_call["id"]
         ))
     
-    # Handle ConductResearch calls (research delegation)
-    conduct_research_calls = [
-        tool_call for tool_call in most_recent_message.tool_calls 
-        if tool_call["name"] == "ConductResearch"
-    ]
-    
+    # Handle ConductResearch calls (research delegation) - only if research was requested
     if conduct_research_calls:
         try:
             # Limit concurrent research units to prevent resource exhaustion
@@ -391,12 +421,56 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
                     }
                 )
     
-    # Step 3: Return command with all tool results
+    # Step 3: Route based on what happened this iteration
     update_payload["supervisor_messages"] = all_tool_messages
-    return Command(
-        goto="supervisor",
-        update=update_payload
-    ) 
+    
+    if research_was_conducted:
+        # Research was conducted - ask for human feedback on progress
+        research_brief = state.get("research_brief", "Research in progress")
+        notes = state.get("notes", [])
+        raw_notes = state.get("raw_notes", [])
+        research_iterations = state.get("research_iterations", 0)
+        
+        progress_summary = f"""🤔 **Research Progress Update - Iteration {research_iterations}**
+
+**Research Question:** {research_brief}
+
+**Current Status:**
+- Completed {research_iterations} research iterations
+- Gathered {len(notes)} key findings
+- Collected {len(raw_notes)} raw data points
+
+**Key Findings So Far:**
+"""
+        
+        if notes:
+            for i, note in enumerate(notes[-5:], 1):  # Show last 5 findings
+                progress_summary += f"{i}. {note[:200]}{'...' if len(note) > 200 else ''}\n"
+        else:
+            progress_summary += "No findings yet - research just beginning.\n"
+        
+        progress_summary += "\n**Recent Research Data:**\n"
+        if raw_notes:
+            for i, raw_note in enumerate(raw_notes[-3:], 1):  # Show last 3 raw data points
+                progress_summary += f"{i}. {raw_note[:150]}{'...' if len(raw_note) > 150 else ''}\n"
+        else:
+            progress_summary += "No raw data collected yet.\n"
+        
+        progress_summary += "\n*Please review the progress above and provide feedback or say 'continue' to proceed with the next research iteration.*"
+        
+        return Command(
+            goto=END,
+            update={
+                "human_interaction_content": progress_summary,
+                **update_payload
+            }
+        )
+    else:
+        # No research conducted - just planning/thinking, continue to next iteration
+        return Command(
+            goto="supervisor",
+            update=update_payload
+        ) 
 
 # Supervisor Subgraph Construction
 # Creates the supervisor workflow that manages research delegation and coordination
@@ -408,9 +482,40 @@ supervisor_builder.add_node("supervisor_tools", supervisor_tools)  # Tool execut
 
 # Define supervisor workflow edges
 supervisor_builder.add_edge(START, "supervisor")  # Entry point to supervisor
+# Note: Conditional routing is handled by Command returns from nodes
 
 # Compile supervisor subgraph for use in main workflow
 supervisor_subgraph = supervisor_builder.compile()
+
+def route_after_supervisor(state: AgentState, config: RunnableConfig) -> Literal["ask_human", "final_report_generation"]:
+    """Route after supervisor completes based on whether human interaction is needed."""
+    if state.get("human_interaction_content"):
+        return "ask_human"
+    else:
+        return "final_report_generation"
+
+async def ask_human(state: AgentState, config: RunnableConfig) -> dict:
+    """Handle human interaction requests from the supervisor.
+    
+    This function formats and presents questions or requests for clarification
+    from the supervisor to the user, making the interaction clearly visible.
+    
+    Args:
+        state: Current agent state containing human interaction content
+        config: Runtime configuration
+        
+    Returns:
+        Dictionary with formatted human interaction message
+    """
+    human_content = state.get("human_interaction_content", "")
+    
+    # Format the human interaction message
+    interaction_message = f"🤔 **Supervisor Request for Input**\n\n{human_content}\n\n*Please provide your response to continue the research.*"
+    
+    return {
+        "messages": [AIMessage(content=interaction_message)],
+        "human_interaction_content": None  # Clear the content after displaying it
+    }
 
 async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[Literal["researcher_tools"]]:
     """Individual researcher that conducts focused research on specific topics.
@@ -792,7 +897,14 @@ deep_researcher_builder.add_node("final_report_generation", final_report_generat
 
 # Define main workflow edges for sequential execution
 deep_researcher_builder.add_edge(START, "clarify_with_user")                       # Entry point
-deep_researcher_builder.add_edge("research_supervisor", "final_report_generation") # Research to report
+deep_researcher_builder.add_conditional_edges(
+    "research_supervisor",
+    route_after_supervisor,
+    {
+        "ask_human": "ask_human",
+        "final_report_generation": "final_report_generation"
+    }
+)  # Conditional routing after supervisor
 deep_researcher_builder.add_edge("ask_human", END)                                 # Human interaction exit
 deep_researcher_builder.add_edge("final_report_generation", END)                   # Final exit point
 
