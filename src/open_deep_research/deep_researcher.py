@@ -31,6 +31,7 @@ from open_deep_research.prompts import (
 from open_deep_research.state import (
     AgentInputState,
     AgentState,
+    AskHuman,
     ClarifyWithUser,
     ConductResearch,
     ResearchComplete,
@@ -79,6 +80,29 @@ async def clarify_with_user(state: AgentState, config: RunnableConfig) -> Comman
     Returns:
         Command to either end with a clarifying question or proceed to research brief
     """
+    # Check if we're resuming from a previous research session
+    if state.get("supervisor_messages"):
+        # We have existing supervisor messages, so we're resuming from human interaction
+        # Add the latest user message to the supervisor context so it can respond
+        messages = state.get("messages", [])
+        if messages:
+            latest_user_message = None
+            for msg in reversed(messages):
+                if isinstance(msg, HumanMessage):
+                    latest_user_message = msg
+                    break
+            
+            if latest_user_message:
+                # Add the latest user message to supervisor_messages
+                updated_supervisor_messages = state["supervisor_messages"] + [latest_user_message]
+                return Command(
+                    goto="research_supervisor",
+                    update={"supervisor_messages": {"type": "override", "value": updated_supervisor_messages}}
+                )
+        
+        # If no new user message found, just continue to supervisor
+        return Command(goto="research_supervisor")
+    
     # Step 1: Check if clarification is enabled in configuration
     configurable = Configuration.from_runnable_config(config)
     if not configurable.allow_clarification:
@@ -202,8 +226,8 @@ async def supervisor(state: SupervisorState, config: RunnableConfig) -> Command[
         "api_key": get_api_key_for_model(configurable.research_model, config),
     }
     
-    # Available tools: research delegation, completion signaling, and strategic thinking
-    lead_researcher_tools = [ConductResearch, ResearchComplete, think_tool]
+    # Available tools: research delegation, completion signaling, human interaction, and strategic thinking
+    lead_researcher_tools = [ConductResearch, ResearchComplete, AskHuman, think_tool]
     
     # Configure model with tools, retry logic, and model settings
     research_model = (
@@ -253,14 +277,37 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
         tool_call["name"] == "ResearchComplete" 
         for tool_call in most_recent_message.tool_calls
     )
+    ask_human_tool_call = any(
+        tool_call["name"] == "AskHuman" 
+        for tool_call in most_recent_message.tool_calls
+    )
     
-    # Exit if any termination condition is met
+    # Exit if any termination condition is met (except for AskHuman which goes to user)
     if exceeded_allowed_iterations or no_tool_calls or research_complete_tool_call:
         return Command(
             goto=END,
             update={
                 "notes": get_notes_from_tool_calls(supervisor_messages),
                 "research_brief": state.get("research_brief", "")
+            }
+        )
+    
+    # Handle AskHuman calls - route to human interaction node
+    if ask_human_tool_call:
+        ask_human_call = next(
+            tool_call for tool_call in most_recent_message.tool_calls 
+            if tool_call["name"] == "AskHuman"
+        )
+        human_content = ask_human_call["args"]["content"]
+        return Command(
+            goto="ask_human",
+            update={
+                "human_interaction_content": human_content,
+                "supervisor_messages": [ToolMessage(
+                    content="Waiting for human response to clarification request.",
+                    name="AskHuman",
+                    tool_call_id=ask_human_call["id"]
+                )]
             }
         )
     
@@ -604,6 +651,26 @@ researcher_builder.add_edge("compress_research", END)      # Exit point after co
 # Compile researcher subgraph for parallel execution by supervisor
 researcher_subgraph = researcher_builder.compile()
 
+async def ask_human(state: AgentState, config: RunnableConfig):
+    """Handle human interaction requests from the supervisor.
+    
+    This node is called when the supervisor decides to ask the user for input,
+    clarification, or feedback on research progress. It formats the human interaction
+    content and prepares the workflow to pause for user response.
+    
+    Args:
+        state: Current agent state with human interaction content
+        config: Runtime configuration
+        
+    Returns:
+        Dictionary with formatted human interaction message
+    """
+    human_content = state.get("human_interaction_content", "")
+    
+    return {
+        "messages": [AIMessage(content=f"I need your input on this research progress:\n\n{human_content}\n\nPlease provide your thoughts, clarifications, or let me know if I should continue with the current approach.")]
+    }
+
 async def final_report_generation(state: AgentState, config: RunnableConfig):
     """Generate the final comprehensive research report with retry logic for token limits.
     
@@ -708,15 +775,25 @@ deep_researcher_builder = StateGraph(
     config_schema=Configuration
 )
 
+# Main Deep Researcher Graph Construction
+# Creates the complete deep research workflow from user input to final report
+deep_researcher_builder = StateGraph(
+    AgentState, 
+    input=AgentInputState, 
+    config_schema=Configuration
+)
+
 # Add main workflow nodes for the complete research process
 deep_researcher_builder.add_node("clarify_with_user", clarify_with_user)           # User clarification phase
 deep_researcher_builder.add_node("write_research_brief", write_research_brief)     # Research planning phase
 deep_researcher_builder.add_node("research_supervisor", supervisor_subgraph)       # Research execution phase
+deep_researcher_builder.add_node("ask_human", ask_human)                           # Human interaction handling
 deep_researcher_builder.add_node("final_report_generation", final_report_generation)  # Report generation phase
 
 # Define main workflow edges for sequential execution
 deep_researcher_builder.add_edge(START, "clarify_with_user")                       # Entry point
 deep_researcher_builder.add_edge("research_supervisor", "final_report_generation") # Research to report
+deep_researcher_builder.add_edge("ask_human", END)                                 # Human interaction exit
 deep_researcher_builder.add_edge("final_report_generation", END)                   # Final exit point
 
 # Compile the complete deep researcher workflow

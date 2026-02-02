@@ -21,6 +21,12 @@ class ConductResearch(BaseModel):
 class ResearchComplete(BaseModel):
     """Call this tool to indicate that the research is complete."""
 
+class AskHuman(BaseModel):
+    """Call this tool to ask the user for clarification or validation when uncertain."""
+    content: str = Field(
+        description="Content to show to the user, including progress summary, findings, uncertainties, and questions for clarification.",
+    )
+
 class Summary(BaseModel):
     """Research summary with key findings."""
     
@@ -70,6 +76,7 @@ class AgentState(MessagesState):
     raw_notes: Annotated[list[str], override_reducer] = []
     notes: Annotated[list[str], override_reducer] = []
     final_report: str
+    human_interaction_content: Optional[str]
 
 class SupervisorState(TypedDict):
     """State for the supervisor that manages research tasks."""

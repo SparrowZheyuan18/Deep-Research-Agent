@@ -35,6 +35,23 @@ Final Report Generation
 Output Final Report
 ```
 
+**Human Interaction Loop**:
+```
+Research Supervisor
+    ↓ (when findings are noteworthy or at decision points)
+AskHuman Tool Called (for significant updates & clarifications)
+    ↓
+Workflow Pauses Strategically
+    ↓
+User Sees Important Findings & Can Comment
+    ↓
+User Provides Feedback (or "looks good, continue")
+    ↓
+Workflow Resumes
+    ↓
+Research Supervisor Continues Uninterrupted
+```
+
 ## Agent Roles and Interactions
 
 ### 1. Clarification Agent
@@ -78,6 +95,7 @@ Output Final Report
 **Interactions**:
 - Receives the research brief
 - Uses `ConductResearch` tool to spawn parallel research agents
+- Uses `AskHuman` tool to request clarification or validation when uncertain
 - Uses `think_tool` for planning between delegations
 - Calls `ResearchComplete` when satisfied with research coverage
 - Can run up to `max_researcher_iterations` iterations
@@ -89,6 +107,12 @@ Output Final Report
 - Use parallel agents for clear independent directions
 - Stop when confident in answer coverage
 - Limit to `max_concurrent_research_units` parallel agents
+
+**Human Interaction**:
+- Calls `AskHuman` when encountering uncertainties, conflicting information, or needing user validation
+- Provides discretionary progress updates only when findings are particularly noteworthy or at natural decision points
+- Uses conversational language to share significant discoveries and gauge user interest
+- Avoids routine updates - lets research continue uninterrupted for incremental findings
 
 ### 4. Sub-Researcher Agents
 **Purpose**: Individual researchers that conduct focused research on specific topics.
@@ -152,6 +176,7 @@ Output Final Report
 - **tavily_search**: Web search for gathering information
 - **think_tool**: Reflection and strategic planning
 - **ConductResearch**: Supervisor tool to delegate research tasks
+- **AskHuman**: Supervisor tool to request user clarification or validation
 - **ResearchComplete**: Supervisor tool to indicate research completion
 
 ### MCP Integration
@@ -220,6 +245,8 @@ The system is evaluated using the Deep Research Bench, which includes:
 4. **Comprehensive Coverage**: System designed for deep, thorough research rather than quick answers
 5. **Multi-Modal Output**: Supports text, citations, and structured reports
 6. **Language Preservation**: Maintains user input language throughout the process
+7. **Human-in-the-Loop Interaction**: Allows users to provide feedback and validation during research to ensure alignment and higher information density
+8. **Intelligent Progress Updates**: Provides discretionary updates only when findings are genuinely noteworthy, avoiding routine interruptions while maintaining user engagement when appropriate
 
 ## All Prompts Summary
 
